@@ -31,6 +31,7 @@ class DummyCredentials:
         self.quota_project_id = "dummy-project"
         self.token = "dummy-token"
         self.valid = True
+        self.expired = False
     def before_request(self, request, method, url, headers):
         headers["Authorization"] = "Bearer dummy-token"
     def refresh(self, request):

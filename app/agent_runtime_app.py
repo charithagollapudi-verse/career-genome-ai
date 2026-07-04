@@ -62,6 +62,10 @@ class AgentEngineApp(AdkApp):
         return self
 
 
+from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel
+from app.skill_intelligence import analyze_user_skills
+
 gemini_location = os.environ.get("GOOGLE_CLOUD_LOCATION")
 logs_bucket_name = os.environ.get("LOGS_BUCKET_NAME")
 agent_runtime = AgentEngineApp(
@@ -72,3 +76,80 @@ agent_runtime = AgentEngineApp(
         else InMemoryArtifactService()
     ),
 )
+
+fastapi_app = FastAPI(title="Career Genome AI - Skill Intelligence Engine")
+
+class AnalyzeSkillsRequest(BaseModel):
+    user_skills: list[str]
+    target_role: str | None = None
+
+@fastapi_app.post("/analyze-skills")
+def analyze_skills(request: AnalyzeSkillsRequest):
+    if not request.user_skills:
+        raise HTTPException(status_code=400, detail="user_skills list cannot be empty")
+    try:
+        return analyze_user_skills(request.user_skills, request.target_role)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+from app.resume_parser import parse_resume_text, ResumeData
+
+class ParseResumeRequest(BaseModel):
+    resume_text: str
+
+@fastapi_app.post("/parse-resume", response_model=ResumeData)
+def parse_resume(request: ParseResumeRequest):
+    if not request.resume_text or not request.resume_text.strip():
+        raise HTTPException(status_code=400, detail="resume_text cannot be empty")
+    try:
+        return parse_resume_text(request.resume_text)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+from app.career_dna import generate_career_dna, CareerDNAOutput
+from app.skill_gap_analyzer import analyze_skill_gap, SkillGapOutput
+from app.recommendation_engine import generate_recommendations, RecommendationOutput
+
+class AnalyzeDnaRequest(BaseModel):
+    profile_text: str
+
+class AnalyzeGapRequest(BaseModel):
+    user_skills: list[str]
+    target_role: str
+
+class GenerateRecommendationsRequest(BaseModel):
+    missing_skills: list[str]
+    target_role: str
+
+@fastapi_app.post("/analyze-dna", response_model=CareerDNAOutput)
+def analyze_dna(request: AnalyzeDnaRequest):
+    if not request.profile_text or not request.profile_text.strip():
+        raise HTTPException(status_code=400, detail="profile_text cannot be empty")
+    try:
+        return generate_career_dna(request.profile_text)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@fastapi_app.post("/analyze-gap", response_model=SkillGapOutput)
+def analyze_gap(request: AnalyzeGapRequest):
+    try:
+        return analyze_skill_gap(request.user_skills, request.target_role)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@fastapi_app.post("/generate-recommendations", response_model=RecommendationOutput)
+def get_recommendations(request: GenerateRecommendationsRequest):
+    try:
+        return generate_recommendations(request.missing_skills, request.target_role)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
