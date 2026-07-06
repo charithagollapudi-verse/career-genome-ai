@@ -53,8 +53,24 @@ def analyze_skill_gap(user_skills: list[str], target_role: str) -> SkillGapOutpu
         logger.error(f"Error generating gap summary using Gemini: {e}")
         gap_summary = f"Currently matching {len(matched_skills)} out of {len(profile_skills)} required skills. Missing: {', '.join(missing_skills)}."
         
+    from app.ml_forecaster import simulate_career_trajectory
+    from app.xai import explain_career_match
+    
+    try:
+        traj = simulate_career_trajectory(user_skills, target_role)
+        confidence = traj.get("confidence_score", 0.80)
+    except Exception:
+        confidence = 0.80
+
+    explanation = explain_career_match(user_skills, target_role, {
+        "match_percentage": match_percentage,
+        "missing_skills": missing_skills
+    })
+
     return SkillGapOutput(
         match_percentage=match_percentage,
         missing_skills=missing_skills,
-        gap_summary=gap_summary
+        gap_summary=gap_summary,
+        confidence_score=confidence,
+        explanation=explanation
     )

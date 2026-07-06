@@ -37,6 +37,17 @@ class DummyCredentials:
     def refresh(self, request):
         pass
 
+import vertexai
+vertexai.init = MagicMock()
+
+import google.genai
+original_init = google.genai.Client.__init__
+def patched_init(self, *args, **kwargs):
+    if kwargs.get("vertexai") is not True:
+        kwargs["vertexai"] = False
+    original_init(self, *args, **kwargs)
+google.genai.Client.__init__ = patched_init
+
 google.auth.default = MagicMock(return_value=(DummyCredentials(), "dummy-project"))
 google.cloud.logging.Client = MagicMock()
 

@@ -16,6 +16,7 @@
 import os
 import json
 import logging
+import re
 from typing import Any
 from pydantic import BaseModel, Field
 
@@ -55,10 +56,14 @@ class SkillGapOutput(BaseModel):
     match_percentage: int = Field(0, description="Match score out of 100.")
     missing_skills: list[str] = Field(default_factory=list, description="Required skills missing from user profile.")
     gap_summary: str = Field("", description="Qualitative summary of the skill gaps.")
+    confidence_score: float = Field(0.0, description="Confidence score of career trajectory.")
+    explanation: dict[str, Any] = Field(default_factory=dict, description="XAI explanation for the skill gaps.")
 
 class ForecastOutput(BaseModel):
     role: str = Field("", description="Target role analyzed.")
     trajectory: list[dict[str, Any]] = Field(default_factory=list, description="Year-over-year match probability projections.")
+    confidence_score: float = Field(0.0, description="Confidence score of trajectory forecast.")
+    explanation: dict[str, Any] = Field(default_factory=dict, description="XAI explanation for the forecast.")
 
 class RecommendationOutput(BaseModel):
     courses: list[str] = Field(default_factory=list, description="Recommended learning paths or courses.")
@@ -184,42 +189,116 @@ mentor_agent = LlmAgent(
 # 4. Workflow Function Nodes
 # -------------------------------------------------------------
 
+EMAIL_REGEX = re.compile(r'[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+')
+PHONE_REGEX = re.compile(r'\b(?:\+?\d{1,3}[-.\s]?)?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}\b')
+
 @node
 def security_checkpoint(ctx: Context, node_input: types.Content) -> Event:
     """
-    Performs basic input safety checking, PII scrubbing, and logs the request.
+    Performs basic input safety checking, PII scrubbing, domain screening, and structured JSON audit logging.
     """
-    audit_entry = f"[{ctx.run_id}] Request safety verification started."
+    run_id = ctx.run_id
     
+    # 1. Extract input text
     user_text = ""
     if node_input and node_input.parts:
         user_text = "".join([part.text for part in node_input.parts if part.text])
+        
+    original_text = user_text
+    
+    # Create structured audit entries list
+    local_audit_entries = []
+    
+    def add_audit(event: str, severity: str, details: dict):
+        log_entry = {
+            "run_id": run_id,
+            "event": event,
+            "severity": severity,
+            "details": details
+        }
+        log_str = json.dumps(log_entry)
+        if severity == "CRITICAL":
+            logger.error(log_str)
+        elif severity == "WARNING":
+            logger.warning(log_str)
+        else:
+            logger.info(log_str)
+        local_audit_entries.append(log_str)
+
+    add_audit("request_received", "INFO", {"input_length": len(user_text)})
     
     is_breach = False
-    lower_text = user_text.lower()
+    breach_reason = ""
     
-    if "ignore previous instructions" in lower_text or "system prompt" in lower_text:
+    # 2. Domain Rule Check: Length limit (prevent buffer overload / DOS)
+    if len(user_text) > 2000:
         is_breach = True
-        audit_entry += " Alert: Potential prompt injection detected!"
+        breach_reason = "Input length exceeds 2000 characters limit."
+        add_audit("size_limit_exceeded", "CRITICAL", {"length": len(user_text)})
         
+    # 3. Prompt Injection Checking
+    lower_text = user_text.lower()
+    injection_keywords = ["ignore previous instructions", "system prompt", "override settings", "reveal system instruction"]
+    detected_injections = [kw for kw in injection_keywords if kw in lower_text]
+    if detected_injections:
+        is_breach = True
+        breach_reason = f"Potential prompt injection detected. Keywords: {detected_injections}"
+        add_audit("prompt_injection_detected", "CRITICAL", {"detected_keywords": detected_injections})
+        
+    # 4. PII Scrubbing (Email and Phone numbers)
+    scrubbed_text = user_text
+    emails_found = EMAIL_REGEX.findall(user_text)
+    phones_found = PHONE_REGEX.findall(user_text)
+    
+    if emails_found:
+        scrubbed_text = EMAIL_REGEX.sub("[REDACTED_EMAIL]", scrubbed_text)
+        add_audit("pii_scrubbed", "WARNING", {"type": "email", "count": len(emails_found)})
+        
+    if phones_found:
+        scrubbed_text = PHONE_REGEX.sub("[REDACTED_PHONE]", scrubbed_text)
+        add_audit("pii_scrubbed", "WARNING", {"type": "phone", "count": len(phones_found)})
+        
+    # 5. Domain-specific rule: Soft domain classification/warning
+    career_keywords = [
+        "career", "job", "role", "skill", "resume", "cv", "portfolio", "interview", "hire",
+        "market", "trend", "forecast", "learning", "course", "project", "dna", "profile",
+        "python", "cloud", "engineer", "mlops", "aws", "gcp", "kubernetes", "docker"
+    ]
+    is_related = any(kw in lower_text for kw in career_keywords)
+    if not is_related and not is_breach:
+        add_audit("domain_rule_check", "WARNING", {"status": "unrelated_topic", "query": user_text[:100]})
+    else:
+        add_audit("domain_rule_check", "INFO", {"status": "passed"})
+
+    # Prepare final state delta
     state_delta = {
-        "user_query": user_text,
-        "audit_log": ctx.state.get("audit_log", []) + [audit_entry]
+        "user_query": scrubbed_text,
+        "audit_log": ctx.state.get("audit_log", []) + local_audit_entries
     }
     
     if is_breach:
+        add_audit("security_checkpoint_decision", "CRITICAL", {"decision": "reject", "reason": breach_reason})
         return Event(output="Security breach detected.", route="security_breach", state=state_delta)
-    
-    return Event(output=user_text, route="secure", state=state_delta)
+        
+    add_audit("security_checkpoint_decision", "INFO", {"decision": "approve"})
+    return Event(output=scrubbed_text, route="secure", state=state_delta)
 
 
 @node
 def security_event(ctx: Context, node_input: str) -> Event:
     """
-    Handles security breach actions by returning a clean rejection message.
+    Handles security breach actions by returning a clean rejection message and logging the event in JSON format.
     """
-    audit_entry = f"[{ctx.run_id}] Security breach action triggered. Rejection output generated."
-    state_delta = {"audit_log": ctx.state.get("audit_log", []) + [audit_entry]}
+    log_entry = {
+        "run_id": ctx.run_id,
+        "event": "security_breach_action_triggered",
+        "severity": "CRITICAL",
+        "details": {"action": "rejection_output_generated"}
+    }
+    log_str = json.dumps(log_entry)
+    logger.error(log_str)
+    
+    state_delta = {"audit_log": ctx.state.get("audit_log", []) + [log_str]}
     
     violation_content = types.Content(
         role="model",

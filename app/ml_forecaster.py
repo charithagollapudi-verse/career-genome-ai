@@ -26,6 +26,7 @@ def forecast_skill_demand(role: str, skill: str, target_year: int) -> dict:
             "year": target_year,
             "predicted_demand_index": 0.85,
             "predicted_growth": 10.0,
+            "confidence_score": 0.40,
             "note": "Fallback projection due to insufficient historical data"
         }
         
@@ -44,12 +45,17 @@ def forecast_skill_demand(role: str, skill: str, target_year: int) -> dict:
     pred_demand = float(np.clip(pred_demand, 0.0, 1.0))
     pred_growth = float(pred_growth)
     
+    confidence = 0.70
+    if len(rows) >= 3:
+        confidence = 0.95
+
     return {
         "role": role,
         "skill": skill,
         "year": target_year,
         "predicted_demand_index": round(pred_demand, 3),
         "predicted_growth": round(pred_growth, 2),
+        "confidence_score": confidence,
         "note": "Successfully projected using Linear Regression model"
     }
 
@@ -73,7 +79,8 @@ def simulate_career_trajectory(user_skills: list, target_role: str) -> dict:
             "target_role": target_role,
             "current_match_probability": 0.0,
             "missing_skills": [],
-            "trajectory": []
+            "trajectory": [],
+            "confidence_score": 0.00
         }
         
     user_skills_set = set([s.strip().lower() for s in user_skills])
@@ -101,9 +108,16 @@ def simulate_career_trajectory(user_skills: list, target_role: str) -> dict:
     # Map back original skill names for missing
     missing_original = [s for s in required_skills if s.lower() in missing]
     
+    conf = 0.80
+    if user_skills:
+        match_ratio = len(overlap) / max(1, len(user_skills))
+        conf = round(0.70 + 0.25 * match_ratio, 2)
+    conf = min(conf, 1.0)
+    
     return {
         "target_role": target_role,
         "current_match_probability": round(match_prob, 2),
         "missing_skills": missing_original,
-        "trajectory": trajectory
+        "trajectory": trajectory,
+        "confidence_score": conf
     }

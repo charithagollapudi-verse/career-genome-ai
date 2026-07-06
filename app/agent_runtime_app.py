@@ -153,3 +153,41 @@ def get_recommendations(request: GenerateRecommendationsRequest):
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+from app.ml_forecaster import forecast_skill_demand
+from app.xai import explain_skill_forecast
+
+class ForecastDemandRequest(BaseModel):
+    role: str
+    skill: str
+    target_year: int = 2028
+
+class SkillForecastOutput(BaseModel):
+    role: str
+    skill: str
+    year: int
+    predicted_demand_index: float
+    predicted_growth: float
+    confidence_score: float
+    note: str
+    explanation: dict[str, Any]
+
+@fastapi_app.post("/forecast-demand", response_model=SkillForecastOutput)
+def forecast_demand(request: ForecastDemandRequest):
+    try:
+        forecast = forecast_skill_demand(request.role, request.skill, request.target_year)
+        explanation = explain_skill_forecast(request.role, request.skill, forecast)
+        return SkillForecastOutput(
+            role=forecast["role"],
+            skill=forecast["skill"],
+            year=forecast["year"],
+            predicted_demand_index=forecast["predicted_demand_index"],
+            predicted_growth=forecast["predicted_growth"],
+            confidence_score=forecast["confidence_score"],
+            note=forecast["note"],
+            explanation=explanation
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
